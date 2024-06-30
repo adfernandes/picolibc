@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright © 2019 Keith Packard
+ * Copyright © 2024 Keith Packard
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -32,13 +32,20 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
  * OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-        .global sys_semihost
-        .balign 16
-        .option push
-        .option norvc
-sys_semihost:
-        slli zero, zero, 0x1f
-        ebreak
-        srai zero, zero, 0x7
-        ret
-        .option pop
+
+#include "stdio_private.h"
+
+/*
+ * This only serializes with other threads also using flockfile,
+ * but it's about as good as we can reasonably manage without
+ * actually adding per-file locking to every API. We also
+ * don't have any try-lock ability in the picolibc lock API, so
+ * we're stuck just blocking.
+ */
+int
+ftrylockfile (FILE *f)
+{
+    (void) f;
+    __LIBC_LOCK();
+    return 0;
+}

@@ -163,6 +163,16 @@ have_alias_attribute_option = get_option('have-alias-attribute')
 have_format_attribute_option = get_option('have-format-attribute')
 have_weak_attribute_option = get_option('have-weak-attribute')
 
+# C++ is only used in tests, so only check for it when tests are enabled
+if enable_tests
+  have_cplusplus = add_languages('cpp', required: false)
+  if have_cplusplus
+    cpp = meson.get_compiler('cpp')
+  endif
+else
+  have_cplusplus = false
+endif
+
 newlib_iconv_encodings = get_option('newlib-iconv-encodings')
 newlib_iconv_encodings_exclude = get_option('newlib-iconv-encodings-exclude')
 newlib_iconv_from_encodings = get_option('newlib-iconv-from-encodings')
@@ -174,8 +184,8 @@ newlib_nano_malloc = get_option('newlib-nano-malloc')
 lite_exit = get_option('lite-exit')
 
 newlib_elix_level = get_option('newlib-elix-level')
-c_args = ['-include', '@0@/@1@'.format(meson.current_build_dir(), 'picolibc.h')] + core_c_args
-native_c_args = ['-DNO_NEWLIB']
+c_args = core_c_args
+native_common_args = ['-DNO_NEWLIB']
 
 if get_option('profile')
   c_args += ['-pg', '-no-pie']
@@ -185,10 +195,19 @@ if get_option('freestanding')
   c_args += ['-ffreestanding']
 endif
 
+if have_cplusplus
+  cpp_args = c_args
+  cpp_flags = cpp.get_supported_arguments(['-fno-common', '-frounding-math', '-fsignaling-nans',
+				           '-Wno-unsupported-floating-point-opt',
+				           '-fno-builtin-copysignl'])
+  cpp_args += cpp_flags
+  native_cpp_args = native_common_args + cpp_flags
+endif
+
 # Disable ssp and fortify source while building picolibc (it's enabled
 # by default by the ubuntu native compiler)
 c_flags = cc.get_supported_arguments(['-fno-common', '-frounding-math', '-fsignaling-nans',
-				      '-Wno-unsupported-floating-point-opt', '-fno-stack-protector',
+				      '-Wno-unsupported-floating-point-opt',
 				      '-fno-builtin-copysignl'])
 
 c_sanitize_bounds_flags = cc.get_supported_arguments(['-fsanitize=bounds'])
@@ -196,7 +215,7 @@ c_sanitize_trap_flags = cc.get_supported_arguments(['-fsanitize-undefined-trap-o
 c_sanitize_no_trap_flags = cc.get_supported_arguments(['-fno-sanitize-undefined-trap-on-error', '-static-libubsan'])
 have_ubsan = c_sanitize_bounds_flags != []
 c_args += c_flags
-native_c_args += c_flags
+native_c_args = native_common_args + c_flags
 
 sanitize_bounds = get_option('sanitize-bounds')
 sanitize_trap_on_error = get_option('sanitize-trap-on-error')
@@ -278,6 +297,7 @@ posix_console = tinystdio and get_option('posix-console')
 posix_io = tinystdio and (get_option('posix-io') or posix_console)
 io_float_exact = not tinystdio or get_option('io-float-exact')
 atomic_ungetc = tinystdio and get_option('atomic-ungetc')
+atomic_signal = get_option('atomic-signal')
 format_default = get_option('format-default')
 printf_aliases = get_option('printf-aliases')
 io_percent_b = tinystdio and get_option('io-percent-b')
@@ -762,25 +782,27 @@ picolibcpp_specs = configure_file(input: 'picolibc.specs.in',
 				  install: specs_install)
 
 # Not all compilers necessarily support all warnings; only use these which are:
-c_warnings = [
-  '-Werror=implicit-function-declaration',
+common_warnings = [
   '-Werror=vla',
   '-Warray-bounds',
-  '-Wold-style-definition',
   '-Werror=double-promotion',
+  '-Wno-missing-braces',
+  '-Wno-return-type',
+  '-Wno-unused-command-line-argument',
+  '-Wmissing-prototypes',
+  '-Wmissing-declarations',
 ]
 if get_option('analyzer')
-  c_warnings += [
+  common_warnings += [
     '-fanalyzer',
     ]
 endif
-disabled_warnings = [
-  '-Wno-missing-braces',
+c_warnings = common_warnings + [
+  '-Werror=implicit-function-declaration',
+  '-Wold-style-definition',
   '-Wno-implicit-int',
-  '-Wno-return-type',
-  '-Wno-unused-command-line-argument',
 ]
-c_flags = cc.get_supported_arguments(c_warnings, disabled_warnings)
+c_flags = cc.get_supported_arguments(c_warnings)
 c_args += c_flags
 native_c_args += c_flags
 
@@ -791,9 +813,21 @@ c_args += ['-D_LIBC', '-U_FORTIFY_SOURCE']
 # Select a fortify source option
 fortify_source = get_option('fortify-source')
 if fortify_source == 'none'
-  test_c_args += '-U_FORTIFY_SOURCE'
+  test_fortify_arg = '-U_FORTIFY_SOURCE'
 else
-  test_c_args += '-D_FORTIFY_SOURCE=' + fortify_source
+  test_fortify_arg = '-D_FORTIFY_SOURCE=' + fortify_source
+endif
+test_c_args += [test_fortify_arg]
+
+c_args += cc.get_supported_arguments(['-fno-stack-protector'])
+
+if have_cplusplus
+  cpp_warnings = common_warnings
+  cpp_flags = cpp.get_supported_arguments(cpp_warnings)
+  cpp_args += cpp_flags
+  cpp_flags = cpp.get_supported_arguments(['-fno-exceptions', '-fno-unwind-tables', '-fno-stack-protector'])
+  cpp_args += cpp_flags
+  test_cpp_args = cpp_args + [test_fortify_arg]
 endif
 
 # CompCert does not support bitfields in packed structs, so avoid using this optimization
@@ -1302,7 +1336,7 @@ conf_data.set('_HAVE_PICOLIBC_TLS_RP2040', get_option('tls-rp2040'),
 conf_data.set('POSIX_IO', posix_io, description: 'Use open/close/read/write in tinystdio')
 conf_data.set('_PRINTF_SMALL_ULTOA', printf_small_ultoa, description: 'avoid software division in decimal conversion')
 conf_data.set('ATOMIC_UNGETC', atomic_ungetc, description: 'Use atomics for fgetc/ungetc for re-entrancy')
-conf_data.set('_PICOLIBC_ATOMIC_SIGNAL', get_option('atomic-signal'), description: 'Use atomics for signal/raise for re-entrancy')
+conf_data.set('_PICOLIBC_ATOMIC_SIGNAL', atomic_signal, description: 'Use atomics for signal/raise for re-entrancy')
 conf_data.set('_HAVE_BITFIELDS_IN_PACKED_STRUCTS', have_bitfields_in_packed_structs, description: 'Use bitfields in packed structs')
 conf_data.set('_HAVE_BUILTIN_MUL_OVERFLOW', have_builtin_mul_overflow, description: 'Compiler has __builtin_mul_overflow')
 conf_data.set('_HAVE_BUILTIN_ADD_OVERFLOW', have_builtin_add_overflow, description: 'Compiler has __builtin_add_overflow')
@@ -1554,6 +1588,10 @@ if tests_enable_stack_protector
   endif
 endif
 
+if not tests_enable_stack_protector
+  test_c_args += cc.get_supported_arguments(['-fno-stack-protector'])
+endif
+
 if have_long_double and get_option('test-long-double')
   test_c_args += ['-D_TEST_LONG_DOUBLE']
   native_c_args += ['-D_TEST_LONG_DOUBLE']
@@ -1618,7 +1656,7 @@ if has_semihost
     endif
 
     set_variable(test_link_args_variable,
-		 ['-nostartfiles', '-T', picolibc_ld_string,
+		 ['-nostdlib', '-T', picolibc_ld_string,
 		  lib_gcc] + additional_libs_list + specs_line)
 
     set_variable(test_linker_files_variable, [picolibc_ld_value])
